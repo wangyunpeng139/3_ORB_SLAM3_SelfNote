@@ -1,0 +1,1161 @@
+/**
+* This file is part of ORB-SLAM3
+*
+* Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez Rodríguez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+* Copyright (C) 2014-2016 Raúl Mur-Artal, José M.M. Montiel and Juan D. Tardós, University of Zaragoza.
+*
+* ORB-SLAM3 is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+* License as published by the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* ORB-SLAM3 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even
+* the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License along with ORB-SLAM3.
+* If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#include "G2oTypes.h"
+#include "ImuTypes.h"
+#include "Converter.h"
+namespace ORB_SLAM3
+{
+
+ImuCamPose::ImuCamPose(KeyFrame *pKF):its(0)
+{
+    // Load IMU pose
+    twb = Converter::toVector3d(pKF->GetImuPosition());
+    Rwb = Converter::toMatrix3d(pKF->GetImuRotation());
+
+    // Load camera poses
+    int num_cams;
+    if(pKF->mpCamera2)
+        num_cams=2;
+    else
+        num_cams=1;
+
+    tcw.resize(num_cams);
+    Rcw.resize(num_cams);
+    tcb.resize(num_cams);
+    Rcb.resize(num_cams);
+    Rbc.resize(num_cams);
+    tbc.resize(num_cams);
+    pCamera.resize(num_cams);
+
+    // Left camera
+    tcw[0] = Converter::toVector3d(pKF->GetTranslation());
+    Rcw[0] = Converter::toMatrix3d(pKF->GetRotation());
+    tcb[0] = Converter::toVector3d(pKF->mImuCalib.Tcb.rowRange(0,3).col(3));
+    Rcb[0] = Converter::toMatrix3d(pKF->mImuCalib.Tcb.rowRange(0,3).colRange(0,3));
+    Rbc[0] = Rcb[0].transpose();
+    tbc[0] = Converter::toVector3d(pKF->mImuCalib.Tbc.rowRange(0,3).col(3));
+    pCamera[0] = pKF->mpCamera;
+    bf = pKF->mbf;
+
+    if(num_cams>1)
+    {
+        Eigen::Matrix4d Trl = Converter::toMatrix4d(pKF->mTrl);
+        Rcw[1] = Trl.block<3,3>(0,0)*Rcw[0];
+        tcw[1] = Trl.block<3,3>(0,0)*tcw[0]+Trl.block<3,1>(0,3);
+        tcb[1] = Trl.block<3,3>(0,0)*tcb[0]+Trl.block<3,1>(0,3);
+        Rcb[1] = Trl.block<3,3>(0,0)*Rcb[0];
+        Rbc[1] = Rcb[1].transpose();
+        tbc[1] = -Rbc[1]*tcb[1];
+        pCamera[1] = pKF->mpCamera2;
+    }
+
+    // For posegraph 4DoF
+    Rwb0 = Rwb;
+    DR.setIdentity();
+}
+
+ImuCamPose::ImuCamPose(Frame *pF):its(0)
+{
+    // Load IMU pose
+    twb = Converter::toVector3d(pF->GetImuPosition());
+    Rwb = Converter::toMatrix3d(pF->GetImuRotation());
+
+    // Load camera poses
+    int num_cams;
+    if(pF->mpCamera2)
+        num_cams=2;
+    else
+        num_cams=1;
+
+    tcw.resize(num_cams);
+    Rcw.resize(num_cams);
+    tcb.resize(num_cams);
+    Rcb.resize(num_cams);
+    Rbc.resize(num_cams);
+    tbc.resize(num_cams);
+    pCamera.resize(num_cams);
+
+    // Left camera
+    tcw[0] = Converter::toVector3d(pF->mTcw.rowRange(0,3).col(3));
+    Rcw[0] = Converter::toMatrix3d(pF->mTcw.rowRange(0,3).colRange(0,3));
+    tcb[0] = Converter::toVector3d(pF->mImuCalib.Tcb.rowRange(0,3).col(3));
+    Rcb[0] = Converter::toMatrix3d(pF->mImuCalib.Tcb.rowRange(0,3).colRange(0,3));
+    Rbc[0] = Rcb[0].transpose();
+    tbc[0] = Converter::toVector3d(pF->mImuCalib.Tbc.rowRange(0,3).col(3));
+    pCamera[0] = pF->mpCamera;
+    bf = pF->mbf;
+
+    if(num_cams>1)
+    {
+        Eigen::Matrix4d Trl = Converter::toMatrix4d(pF->mTrl);
+        Rcw[1] = Trl.block<3,3>(0,0)*Rcw[0];
+        tcw[1] = Trl.block<3,3>(0,0)*tcw[0]+Trl.block<3,1>(0,3);
+        tcb[1] = Trl.block<3,3>(0,0)*tcb[0]+Trl.block<3,1>(0,3);
+        Rcb[1] = Trl.block<3,3>(0,0)*Rcb[0];
+        Rbc[1] = Rcb[1].transpose();
+        tbc[1] = -Rbc[1]*tcb[1];
+        pCamera[1] = pF->mpCamera2;
+    }
+
+    // For posegraph 4DoF
+    Rwb0 = Rwb;
+    DR.setIdentity();
+}
+
+ImuCamPose::ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, KeyFrame* pKF): its(0)
+{
+    // This is only for posegrpah, we do not care about multicamera
+    tcw.resize(1);
+    Rcw.resize(1);
+    tcb.resize(1);
+    Rcb.resize(1);
+    Rbc.resize(1);
+    tbc.resize(1);
+    pCamera.resize(1);
+
+    tcb[0] = Converter::toVector3d(pKF->mImuCalib.Tcb.rowRange(0,3).col(3));
+    Rcb[0] = Converter::toMatrix3d(pKF->mImuCalib.Tcb.rowRange(0,3).colRange(0,3));
+    Rbc[0] = Rcb[0].transpose();
+    tbc[0] = Converter::toVector3d(pKF->mImuCalib.Tbc.rowRange(0,3).col(3));
+    twb = _Rwc*tcb[0]+_twc;
+    Rwb = _Rwc*Rcb[0];
+    Rcw[0] = _Rwc.transpose();
+    tcw[0] = -Rcw[0]*_twc;
+    pCamera[0] = pKF->mpCamera;
+    bf = pKF->mbf;
+
+    // For posegraph 4DoF
+    Rwb0 = Rwb;
+    DR.setIdentity();
+}
+
+void ImuCamPose::SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw, const std::vector<Eigen::Matrix3d> &_Rbc,
+              const std::vector<Eigen::Vector3d> &_tbc, const double &_bf)
+{
+    Rbc = _Rbc;
+    tbc = _tbc;
+    Rcw = _Rcw;
+    tcw = _tcw;
+    const int num_cams = Rbc.size();
+    Rcb.resize(num_cams);
+    tcb.resize(num_cams);
+
+    for(int i=0; i<tcb.size(); i++)
+    {
+        Rcb[i] = Rbc[i].transpose();
+        tcb[i] = -Rcb[i]*tbc[i];
+    }
+    Rwb = Rcw[0].transpose()*Rcb[0];
+    twb = Rcw[0].transpose()*(tcb[0]-tcw[0]);
+
+    bf = _bf;
+}
+
+Eigen::Vector2d ImuCamPose::Project(const Eigen::Vector3d &Xw, int cam_idx) const
+{
+    //! 到相机坐标系下
+    Eigen::Vector3d Xc = Rcw[cam_idx]*Xw+tcw[cam_idx];
+
+    return pCamera[cam_idx]->project(Xc);
+}
+
+Eigen::Vector3d ImuCamPose::ProjectStereo(const Eigen::Vector3d &Xw, int cam_idx) const
+{
+    Eigen::Vector3d Pc = Rcw[cam_idx]*Xw+tcw[cam_idx];
+    Eigen::Vector3d pc;
+    double invZ = 1/Pc(2);
+    pc.head(2) = pCamera[cam_idx]->project(Pc);
+    pc(2) = pc(0) - bf*invZ;
+    return pc;
+}
+
+bool ImuCamPose::isDepthPositive(const Eigen::Vector3d &Xw, int cam_idx) const
+{
+    return (Rcw[cam_idx].row(2)*Xw+tcw[cam_idx](2))>0.0;
+}
+
+void ImuCamPose::Update(const double *pu)
+{
+    Eigen::Vector3d ur, ut;
+    ur << pu[0], pu[1], pu[2];
+    ut << pu[3], pu[4], pu[5];
+
+    // Update body pose
+    twb += Rwb*ut;
+    Rwb = Rwb*ExpSO3(ur);
+
+    // Normalize rotation after 5 updates
+    its++;
+    if(its>=3)
+    {
+        NormalizeRotation(Rwb);
+        its=0;
+    }
+
+    // Update camera poses
+    const Eigen::Matrix3d Rbw = Rwb.transpose();
+    const Eigen::Vector3d tbw = -Rbw*twb;
+
+    for(int i=0; i<pCamera.size(); i++)
+    {
+        Rcw[i] = Rcb[i]*Rbw;
+        tcw[i] = Rcb[i]*tbw+tcb[i];
+    }
+
+}
+
+void ImuCamPose::UpdateW(const double *pu)
+{
+    Eigen::Vector3d ur, ut;
+    ur << pu[0], pu[1], pu[2];
+    ut << pu[3], pu[4], pu[5];
+
+
+    const Eigen::Matrix3d dR = ExpSO3(ur);
+    DR = dR*DR;
+    Rwb = DR*Rwb0;
+    // Update body pose
+    twb += ut;
+
+    // Normalize rotation after 5 updates
+    its++;
+    if(its>=5)
+    {
+        DR(0,2)=0.0;
+        DR(1,2)=0.0;
+        DR(2,0)=0.0;
+        DR(2,1)=0.0;
+        NormalizeRotation(DR);
+        its=0;
+    }
+
+    // Update camera pose
+    const Eigen::Matrix3d Rbw = Rwb.transpose();
+    const Eigen::Vector3d tbw = -Rbw*twb;
+
+    for(int i=0; i<pCamera.size(); i++)
+    {
+        Rcw[i] = Rcb[i]*Rbw;
+        tcw[i] = Rcb[i]*tbw+tcb[i];
+    }
+}
+
+InvDepthPoint::InvDepthPoint(double _rho, double _u, double _v, KeyFrame* pHostKF): u(_u), v(_v), rho(_rho),
+    fx(pHostKF->fx), fy(pHostKF->fy), cx(pHostKF->cx), cy(pHostKF->cy), bf(pHostKF->mbf)
+{
+}
+
+void InvDepthPoint::Update(const double *pu)
+{
+    rho += *pu;
+}
+
+
+bool VertexPose::read(std::istream& is)
+{
+    std::vector<Eigen::Matrix<double,3,3> > Rcw;
+    std::vector<Eigen::Matrix<double,3,1> > tcw;
+    std::vector<Eigen::Matrix<double,3,3> > Rbc;
+    std::vector<Eigen::Matrix<double,3,1> > tbc;
+
+    const int num_cams = _estimate.Rbc.size();
+    for(int idx = 0; idx<num_cams; idx++)
+    {
+        for (int i=0; i<3; i++){
+            for (int j=0; j<3; j++)
+                is >> Rcw[idx](i,j);
+        }
+        for (int i=0; i<3; i++){
+            is >> tcw[idx](i);
+        }
+
+        for (int i=0; i<3; i++){
+            for (int j=0; j<3; j++)
+                is >> Rbc[idx](i,j);
+        }
+        for (int i=0; i<3; i++){
+            is >> tbc[idx](i);
+        }
+
+        float nextParam;
+        for(size_t i = 0; i < _estimate.pCamera[idx]->size(); i++){
+            is >> nextParam;
+            _estimate.pCamera[idx]->setParameter(nextParam,i);
+        }
+    }
+
+    double bf;
+    is >> bf;
+    _estimate.SetParam(Rcw,tcw,Rbc,tbc,bf);
+    updateCache();
+    
+    return true;
+}
+
+bool VertexPose::write(std::ostream& os) const
+{
+    std::vector<Eigen::Matrix<double,3,3> > Rcw = _estimate.Rcw;
+    std::vector<Eigen::Matrix<double,3,1> > tcw = _estimate.tcw;
+
+    std::vector<Eigen::Matrix<double,3,3> > Rbc = _estimate.Rbc;
+    std::vector<Eigen::Matrix<double,3,1> > tbc = _estimate.tbc;
+
+    const int num_cams = tcw.size();
+
+    for(int idx = 0; idx<num_cams; idx++)
+    {
+        for (int i=0; i<3; i++){
+            for (int j=0; j<3; j++)
+                os << Rcw[idx](i,j) << " ";
+        }
+        for (int i=0; i<3; i++){
+            os << tcw[idx](i) << " ";
+        }
+
+        for (int i=0; i<3; i++){
+            for (int j=0; j<3; j++)
+                os << Rbc[idx](i,j) << " ";
+        }
+        for (int i=0; i<3; i++){
+            os << tbc[idx](i) << " ";
+        }
+
+        for(size_t i = 0; i < _estimate.pCamera[idx]->size(); i++){
+            os << _estimate.pCamera[idx]->getParameter(i) << " ";
+        }
+    }
+
+    os << _estimate.bf << " ";
+
+    return os.good();
+}
+
+
+void EdgeMono::linearizeOplus()
+{
+    const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
+    const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
+
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
+    const Eigen::Vector3d Xc = Rcw*VPoint->estimate() + tcw;
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
+
+    const Eigen::Matrix<double,2,3> proj_jac = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
+    _jacobianOplusXi = -proj_jac * Rcw;
+
+    Eigen::Matrix<double,3,6> SE3deriv;
+    double x = Xb(0);
+    double y = Xb(1);
+    double z = Xb(2);
+
+    SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
+            -z , 0.0, x, 0.0, 1.0, 0.0,
+            y ,  -x , 0.0, 0.0, 0.0, 1.0;
+
+    _jacobianOplusXj = proj_jac * Rcb * SE3deriv; // TODO optimize this product
+}
+
+/**
+ * 计算雅克比矩阵：
+ * 
+ * 疑问：
+ *  在ORBV2中是直接利用的相机坐标系下的对应坐标计算雅克比矩阵的，但是：
+ * 为什么在这里使用相机坐标系下的坐标计算重投影误差，但是却使用imu坐标系下的坐标乘以刚性变换到像极坐标系下，绕一个圈子更新雅克比矩阵呢？？
+ * 
+ * 
+*/
+void EdgeMonoOnlyPose::linearizeOplus()
+{
+    //获取图像帧的世界位姿
+    const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[0]);
+
+    //获取旋转和位移
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
+    //计算  三维地图点在当前图像帧坐标系下 的坐标
+    const Eigen::Vector3d Xc = Rcw*Xw + tcw;   // Xw 为三维地图点的世界坐标（是本次图像帧率与上一次图像帧匹配上特征点，对应的三维世界地图点）
+    //! IMU坐标系？干嘛？
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
+    //? 怎么还估计 相机和imu的相对变换？？
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
+
+    //! 获取投影误差 对  相机坐标系下三维坐标 的求导（也就是重投影误差雅克比矩阵左半部分的矩阵）
+    Eigen::Matrix<double,2,3> proj_jac = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
+
+    Eigen::Matrix<double,3,6> SE3deriv;
+    double x = Xb(0);
+    double y = Xb(1);
+    double z = Xb(2);
+    SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
+            -z , 0.0, x, 0.0, 1.0, 0.0,
+            y ,  -x , 0.0, 0.0, 0.0, 1.0;
+    //! 在原来的里面是直接使用的相机坐标系下面的三维坐标，但是这里却使用的是imu坐标系下面的三维坐标带入公式，然后再乘以刚性变换Rcb
+    //? 难道  Rcb *  Xb  !=   Xc吗  ？？  难道这里认为短时间内 imu预积分的旋转比相机精确吗？？
+    //? 为什么？？IMU旋转精度就那么高吗？
+    //! 答 ： 因为有了IMU所以就用IMU信息来预测下一帧的位姿，而不是像ORBSLAM那样匀速假设或者下一帧直接使用上一帧的位姿。
+   //这里是旋转在前，位移在后
+    _jacobianOplusXi = proj_jac * Rcb * SE3deriv; // symbol different becasue of update mode
+}
+
+void EdgeStereo::linearizeOplus()
+{
+    const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
+    const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
+
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
+    const Eigen::Vector3d Xc = Rcw*VPoint->estimate() + tcw;
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
+    const double bf = VPose->estimate().bf;
+    const double inv_z2 = 1.0/(Xc(2)*Xc(2));
+
+    Eigen::Matrix<double,3,3> proj_jac;
+    proj_jac.block<2,3>(0,0) = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
+    proj_jac.block<1,3>(2,0) = proj_jac.block<1,3>(0,0);
+    proj_jac(2,2) += bf*inv_z2;
+
+    _jacobianOplusXi = -proj_jac * Rcw;
+
+    Eigen::Matrix<double,3,6> SE3deriv;
+    double x = Xb(0);
+    double y = Xb(1);
+    double z = Xb(2);
+
+    SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
+            -z , 0.0, x, 0.0, 1.0, 0.0,
+            y ,  -x , 0.0, 0.0, 0.0, 1.0;
+
+    _jacobianOplusXj = proj_jac * Rcb * SE3deriv;
+
+
+    /*const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
+    const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
+
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw;
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw;
+    const Eigen::Vector3d Xc = Rcw*VPoint->estimate() + tcw;
+    const double &xc = Xc[0];
+    const double &yc = Xc[1];
+    const double invzc = 1.0/Xc[2];
+    const double invzc2 = invzc*invzc;
+    const double &fx = VPose->estimate().fx;
+    const double &fy = VPose->estimate().fy;
+    const double &bf = VPose->estimate().bf;
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb;
+
+    // Jacobian wrt Point
+    _jacobianOplusXi(0,0) = -fx*invzc*Rcw(0,0)+fx*xc*invzc2*Rcw(2,0);
+    _jacobianOplusXi(0,1) = -fx*invzc*Rcw(0,1)+fx*xc*invzc2*Rcw(2,1);
+    _jacobianOplusXi(0,2) = -fx*invzc*Rcw(0,2)+fx*xc*invzc2*Rcw(2,2);
+
+    _jacobianOplusXi(1,0) = -fy*invzc*Rcw(1,0)+fy*yc*invzc2*Rcw(2,0);
+    _jacobianOplusXi(1,1) = -fy*invzc*Rcw(1,1)+fy*yc*invzc2*Rcw(2,1);
+    _jacobianOplusXi(1,2) = -fy*invzc*Rcw(1,2)+fy*yc*invzc2*Rcw(2,2);
+
+    _jacobianOplusXi(2,0) = _jacobianOplusXi(0,0)-bf*invzc2*Rcw(2,0);
+    _jacobianOplusXi(2,1) = _jacobianOplusXi(0,1)-bf*invzc2*Rcw(2,1);
+    _jacobianOplusXi(2,2) = _jacobianOplusXi(0,2)-bf*invzc2*Rcw(2,2);
+
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc*Xc + VPose->estimate().tbc;
+    const Eigen::Matrix3d RS = VPose->estimate().Rcb*Skew(Xb);
+
+    // Jacobian wrt Imu Pose
+    _jacobianOplusXj(0,0) = -fx*invzc*RS(0,0)+fx*xc*invzc2*RS(2,0);
+    _jacobianOplusXj(0,1) = -fx*invzc*RS(0,1)+fx*xc*invzc2*RS(2,1);
+    _jacobianOplusXj(0,2) = -fx*invzc*RS(0,2)+fx*xc*invzc2*RS(2,2);
+    _jacobianOplusXj(0,3) = fx*invzc*Rcb(0,0)-fx*xc*invzc2*Rcb(2,0);
+    _jacobianOplusXj(0,4) = fx*invzc*Rcb(0,1)-fx*xc*invzc2*Rcb(2,1);
+    _jacobianOplusXj(0,5) = fx*invzc*Rcb(0,2)-fx*xc*invzc2*Rcb(2,2);
+
+    _jacobianOplusXj(1,0) = -fy*invzc*RS(1,0)+fy*yc*invzc2*RS(2,0);
+    _jacobianOplusXj(1,1) = -fy*invzc*RS(1,1)+fy*yc*invzc2*RS(2,1);
+    _jacobianOplusXj(1,2) = -fy*invzc*RS(1,2)+fy*yc*invzc2*RS(2,2);
+    _jacobianOplusXj(1,3) = fy*invzc*Rcb(1,0)-fy*yc*invzc2*Rcb(2,0);
+    _jacobianOplusXj(1,4) = fy*invzc*Rcb(1,1)-fy*yc*invzc2*Rcb(2,1);
+    _jacobianOplusXj(1,5) = fy*invzc*Rcb(1,2)-fy*yc*invzc2*Rcb(2,2);
+
+    _jacobianOplusXj(2,0) = _jacobianOplusXj(0,0) - bf*invzc2*RS(2,0);
+    _jacobianOplusXj(2,1) = _jacobianOplusXj(0,1) - bf*invzc2*RS(2,1);
+    _jacobianOplusXj(2,2) = _jacobianOplusXj(0,2) - bf*invzc2*RS(2,2);
+    _jacobianOplusXj(2,3) = _jacobianOplusXj(0,3) + bf*invzc2*Rcb(2,0);
+    _jacobianOplusXj(2,4) = _jacobianOplusXj(0,4) + bf*invzc2*Rcb(2,1);
+    _jacobianOplusXj(2,5) = _jacobianOplusXj(0,5) + bf*invzc2*Rcb(2,2);
+    */
+}
+
+void EdgeStereoOnlyPose::linearizeOplus()
+{
+    const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[0]);
+
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
+    const Eigen::Vector3d Xc = Rcw*Xw + tcw;
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
+    const double bf = VPose->estimate().bf;
+    const double inv_z2 = 1.0/(Xc(2)*Xc(2));
+
+    Eigen::Matrix<double,3,3> proj_jac;
+    proj_jac.block<2,3>(0,0) = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
+    proj_jac.block<1,3>(2,0) = proj_jac.block<1,3>(0,0);
+    proj_jac(2,2) += bf*inv_z2;
+
+    Eigen::Matrix<double,3,6> SE3deriv;
+    double x = Xb(0);
+    double y = Xb(1);
+    double z = Xb(2);
+    SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
+            -z , 0.0, x, 0.0, 1.0, 0.0,
+            y ,  -x , 0.0, 0.0, 0.0, 1.0;
+    _jacobianOplusXi = proj_jac * Rcb * SE3deriv;
+
+    /*const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[0]);
+    const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw;
+    const Eigen::Vector3d &tcw = VPose->estimate().tcw;
+    const Eigen::Vector3d Xc = Rcw*Xw + tcw;
+    const double &xc = Xc[0];
+    const double &yc = Xc[1];
+    const double invzc = 1.0/Xc[2];
+    const double invzc2 = invzc*invzc;
+    const double &fx = VPose->estimate().fx;
+    const double &fy = VPose->estimate().fy;
+    const double &bf = VPose->estimate().bf;
+    const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb;
+
+    const Eigen::Vector3d Xb = VPose->estimate().Rbc*Xc + VPose->estimate().tbc;
+    const Eigen::Matrix3d RS = VPose->estimate().Rcb*Skew(Xb);
+
+    // Jacobian wrt Imu Pose
+    _jacobianOplusXi(0,0) = -fx*invzc*RS(0,0)+fx*xc*invzc2*RS(2,0);
+    _jacobianOplusXi(0,1) = -fx*invzc*RS(0,1)+fx*xc*invzc2*RS(2,1);
+    _jacobianOplusXi(0,2) = -fx*invzc*RS(0,2)+fx*xc*invzc2*RS(2,2);
+    _jacobianOplusXi(0,3) = fx*invzc*Rcb(0,0)-fx*xc*invzc2*Rcb(2,0);
+    _jacobianOplusXi(0,4) = fx*invzc*Rcb(0,1)-fx*xc*invzc2*Rcb(2,1);
+    _jacobianOplusXi(0,5) = fx*invzc*Rcb(0,2)-fx*xc*invzc2*Rcb(2,2);
+
+    _jacobianOplusXi(1,0) = -fy*invzc*RS(1,0)+fy*yc*invzc2*RS(2,0);
+    _jacobianOplusXi(1,1) = -fy*invzc*RS(1,1)+fy*yc*invzc2*RS(2,1);
+    _jacobianOplusXi(1,2) = -fy*invzc*RS(1,2)+fy*yc*invzc2*RS(2,2);
+    _jacobianOplusXi(1,3) = fy*invzc*Rcb(1,0)-fy*yc*invzc2*Rcb(2,0);
+    _jacobianOplusXi(1,4) = fy*invzc*Rcb(1,1)-fy*yc*invzc2*Rcb(2,1);
+    _jacobianOplusXi(1,5) = fy*invzc*Rcb(1,2)-fy*yc*invzc2*Rcb(2,2);
+
+    _jacobianOplusXi(2,0) = _jacobianOplusXi(0,0) - bf*invzc2*RS(2,0);
+    _jacobianOplusXi(2,1) = _jacobianOplusXi(0,1) - bf*invzc2*RS(2,1);
+    _jacobianOplusXi(2,2) = _jacobianOplusXi(0,2) - bf*invzc2*RS(2,2);
+    _jacobianOplusXi(2,3) = _jacobianOplusXi(0,3) + bf*invzc2*Rcb(2,0);
+    _jacobianOplusXi(2,4) = _jacobianOplusXi(0,4) + bf*invzc2*Rcb(2,1);
+    _jacobianOplusXi(2,5) = _jacobianOplusXi(0,5) + bf*invzc2*Rcb(2,2);
+    */
+}
+
+/*Eigen::Vector2d EdgeMonoInvdepth::cam_project(const Eigen::Vector3d & trans_xyz) const{
+  double invZ = 1./trans_xyz[2];
+  Eigen::Vector2d res;
+  res[0] = invZ*trans_xyz[0]*fx + cx;
+  res[1] = invZ*trans_xyz[1]*fy + cy;
+  return res;
+}
+
+Eigen::Vector3d EdgeMonoInvdepth::cam_unproject(const double u, const double v, const double invDepth) const{
+  Eigen::Vector3d res;
+  res[2] = 1./invDepth;
+  double z_x=res[2]/fx;
+  double z_y=res[2]/fy;
+  res[0] = (u-cx)*z_x;
+  res[1] = (v-cy)*z_y;
+
+  return res;
+}
+
+void EdgeMonoInvdepth::linearizeOplus()
+{
+    VertexInvDepth *vPt = static_cast<VertexInvDepth*>(_vertices[0]);
+    g2o::VertexSE3Expmap *vHost = static_cast<g2o::VertexSE3Expmap*>(_vertices[1]);
+    g2o::VertexSE3Expmap *vObs = static_cast<g2o::VertexSE3Expmap*>(_vertices[2]);
+
+    //
+    g2o::SE3Quat Tiw(vObs->estimate());
+    g2o::SE3Quat T0w(vHost->estimate());
+    g2o::SE3Quat Ti0 = Tiw*T0w.inverse();
+    double o_rho_j = vPt->estimate().rho;
+    Eigen::Vector3d o_X_j = cam_unproject(vPt->estimate().u,vPt->estimate().v,o_rho_j);
+    Eigen::Vector3d i_X_j = Ti0.map(o_X_j);
+    double i_rho_j = 1./i_X_j[2];
+    Eigen::Vector2d i_proj_j = cam_project(i_X_j);
+
+    // i_rho_j*C_ij matrix
+    Eigen::Matrix<double,2,3> rhoC_ij;
+    rhoC_ij(0,0) = i_rho_j*fx;
+    rhoC_ij(0,1) = 0.0;
+    rhoC_ij(0,2) = i_rho_j*(cx-i_proj_j[0]);
+    rhoC_ij(1,0) = 0.0;
+    rhoC_ij(1,1) = i_rho_j*fy;
+    rhoC_ij(1,2) = i_rho_j*(cy-i_proj_j[1]);
+
+    // o_rho_j^{-2}*K^{-1}*0_proj_j vector
+    Eigen::Matrix3d Ri0 = Ti0.rotation().toRotationMatrix();
+    Eigen::Matrix<double, 2, 3> tmp;
+    tmp = rhoC_ij*Ri0;
+
+    // Skew matrices
+    Eigen::Matrix3d skew_0_X_j;
+    Eigen::Matrix3d skew_i_X_j;
+
+    skew_0_X_j=Eigen::MatrixXd::Zero(3,3);
+    skew_i_X_j=Eigen::MatrixXd::Zero(3,3);
+
+    skew_0_X_j(0,1) = -o_X_j[2];
+    skew_0_X_j(1,0) = -skew_0_X_j(0,1);
+    skew_0_X_j(0,2) = o_X_j[1];
+    skew_0_X_j(2,0) = -skew_0_X_j(0,2);
+    skew_0_X_j(1,2) = -o_X_j[0];
+    skew_0_X_j(2,1) = -skew_0_X_j(1,2);
+
+    skew_i_X_j(0,1) = -i_X_j[2];
+    skew_i_X_j(1,0) = -skew_i_X_j(0,1);
+    skew_i_X_j(0,2) = i_X_j[1];
+    skew_i_X_j(2,0) = -skew_i_X_j(0,2);
+    skew_i_X_j(1,2) = -i_X_j[0];
+    skew_i_X_j(2,1) = -skew_i_X_j(1,2);
+
+    // Jacobians w.r.t inverse depth in the host frame
+    _jacobianOplus[0].setZero();
+    _jacobianOplus[0] = (1./o_rho_j)*rhoC_ij*Ri0*o_X_j;
+
+    // Jacobians w.r.t pose host frame
+    _jacobianOplus[1].setZero();
+    // Rotation
+    _jacobianOplus[1].block<2,3>(0,0) = -tmp*skew_0_X_j;
+    // translation
+    _jacobianOplus[1].block<2,3>(0,3) = tmp;
+
+    // Jacobians w.r.t pose observer frame
+    _jacobianOplus[2].setZero();
+    // Rotation
+    _jacobianOplus[2].block<2,3>(0,0) = rhoC_ij*skew_i_X_j;
+    // translation
+    _jacobianOplus[2].block<2,3>(0,3) = -rhoC_ij;
+}
+
+
+Eigen::Vector2d EdgeMonoInvdepthBody::cam_project(const Eigen::Vector3d & trans_xyz) const{
+  double invZ = 1./trans_xyz[2];
+  Eigen::Vector2d res;
+  res[0] = invZ*trans_xyz[0]*fx + cx;
+  res[1] = invZ*trans_xyz[1]*fy + cy;
+  return res;
+}
+
+Eigen::Vector3d EdgeMonoInvdepthBody::cam_unproject(const double u, const double v, const double invDepth) const{
+  Eigen::Vector3d res;
+  res[2] = 1./invDepth;
+  double z_x=res[2]/fx;
+  double z_y=res[2]/fy;
+  res[0] = (u-cx)*z_x;
+  res[1] = (v-cy)*z_y;
+
+  return res;
+}*/
+
+VertexVelocity::VertexVelocity(KeyFrame* pKF)
+{
+    setEstimate(Converter::toVector3d(pKF->GetVelocity()));
+}
+
+VertexVelocity::VertexVelocity(Frame* pF)
+{
+    setEstimate(Converter::toVector3d(pF->mVw));
+}
+
+VertexGyroBias::VertexGyroBias(KeyFrame *pKF)
+{
+    setEstimate(Converter::toVector3d(pKF->GetGyroBias()));
+}
+
+VertexGyroBias::VertexGyroBias(Frame *pF)
+{
+    Eigen::Vector3d bg;
+    bg << pF->mImuBias.bwx, pF->mImuBias.bwy,pF->mImuBias.bwz;
+    setEstimate(bg);
+}
+
+VertexAccBias::VertexAccBias(KeyFrame *pKF)
+{
+    setEstimate(Converter::toVector3d(pKF->GetAccBias()));
+}
+
+VertexAccBias::VertexAccBias(Frame *pF)
+{
+    Eigen::Vector3d ba;
+    ba << pF->mImuBias.bax, pF->mImuBias.bay,pF->mImuBias.baz;
+    setEstimate(ba);
+}
+
+
+
+//VIO边，对应 ORBVIO论文里面的 Fig 2 里面的 a      //?（bi和bj似乎直接按照相等约束的）
+//! 关于JRg, JVg, JVa, JPg, JPa 这些变量是在预积分的时候就已经计算好了，这里以构造函数的形式进行初始化而已
+EdgeInertial::EdgeInertial(IMU::Preintegrated *pInt):JRg(Converter::toMatrix3d(pInt->JRg)),
+    JVg(Converter::toMatrix3d(pInt->JVg)), JPg(Converter::toMatrix3d(pInt->JPg)), JVa(Converter::toMatrix3d(pInt->JVa)),
+    JPa(Converter::toMatrix3d(pInt->JPa)), mpInt(pInt), dt(pInt->dT)
+{
+    // This edge links 6 vertices
+    resize(6);
+    //重力
+    g << 0, 0, -IMU::GRAVITY_VALUE;
+    cv::Mat cvInfo = pInt->C.rowRange(0,9).colRange(0,9).inv(cv::DECOMP_SVD);
+    //? 计算信息矩阵，信息矩阵的作用？以及信息矩阵和协方差的关系
+    Matrix9d Info;
+    for(int r=0;r<9;r++)
+        for(int c=0;c<9;c++)
+            Info(r,c)=cvInfo.at<float>(r,c);
+    Info = (Info+Info.transpose())/2;
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double,9,9> > es(Info);
+     Eigen::Matrix<double,9,1> eigs = es.eigenvalues();
+     for(int i=0;i<9;i++)
+         if(eigs[i]<1e-12)
+             eigs[i]=0;
+    Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
+    setInformation(Info);
+}
+
+
+
+//! 这个函数对应 论文ORBVIO里面的公式6，计算 R  V  P 的偏差
+void EdgeInertial::computeError()
+{
+    // TODO Maybe Reintegrate inertial measurments when difference between linearization point and current estimate is too big
+    //TODO 如果线性化点与当前的估计值相差太大的时候，需要重新计算IMU预积分数值
+    //上一帧的。作为先验信息
+    const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
+    const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
+    const VertexGyroBias* VG1= static_cast<const VertexGyroBias*>(_vertices[2]);
+    const VertexAccBias* VA1= static_cast<const VertexAccBias*>(_vertices[3]);
+    //当前帧
+    const VertexPose* VP2 = static_cast<const VertexPose*>(_vertices[4]);
+    const VertexVelocity* VV2 = static_cast<const VertexVelocity*>(_vertices[5]);
+    //偏差使用上一帧的
+    const IMU::Bias b1(VA1->estimate()[0],VA1->estimate()[1],VA1->estimate()[2],VG1->estimate()[0],VG1->estimate()[1],VG1->estimate()[2]);
+    //获取预计分得到的 R  V  P
+    const Eigen::Matrix3d dR = Converter::toMatrix3d(mpInt->GetDeltaRotation(b1));
+    const Eigen::Vector3d dV = Converter::toVector3d(mpInt->GetDeltaVelocity(b1));
+    const Eigen::Vector3d dP = Converter::toVector3d(mpInt->GetDeltaPosition(b1));
+
+    //! 对应公式在 VI-ORB  论文里面的公式 6 
+    const Eigen::Vector3d er = LogSO3(dR.transpose()*VP1->estimate().Rwb.transpose()*VP2->estimate().Rwb);
+    const Eigen::Vector3d ev = VP1->estimate().Rwb.transpose()*(VV2->estimate() - VV1->estimate() - g*dt) - dV;
+    const Eigen::Vector3d ep = VP1->estimate().Rwb.transpose()*(VP2->estimate().twb - VP1->estimate().twb
+                                                               - VV1->estimate()*dt - g*dt*dt/2) - dP;
+
+    _error << er, ev, ep;
+}
+
+//!  计算雅克比矩阵,这部分对应 qxc 第六章 残差及其Jacobian
+void EdgeInertial::linearizeOplus()
+{
+    const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
+    const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
+    const VertexGyroBias* VG1= static_cast<const VertexGyroBias*>(_vertices[2]);
+    const VertexAccBias* VA1= static_cast<const VertexAccBias*>(_vertices[3]);
+    const VertexPose* VP2 = static_cast<const VertexPose*>(_vertices[4]);
+    const VertexVelocity* VV2= static_cast<const VertexVelocity*>(_vertices[5]);
+    const IMU::Bias b1(VA1->estimate()[0],VA1->estimate()[1],VA1->estimate()[2],VG1->estimate()[0],VG1->estimate()[1],VG1->estimate()[2]);
+    const IMU::Bias db = mpInt->GetDeltaBias(b1);
+    Eigen::Vector3d dbg;
+    dbg << db.bwx, db.bwy, db.bwz;
+
+    const Eigen::Matrix3d Rwb1 = VP1->estimate().Rwb;
+    const Eigen::Matrix3d Rbw1 = Rwb1.transpose();
+    const Eigen::Matrix3d Rwb2 = VP2->estimate().Rwb;
+
+    const Eigen::Matrix3d dR = Converter::toMatrix3d(mpInt->GetDeltaRotation(b1));
+    const Eigen::Matrix3d eR = dR.transpose()*Rbw1*Rwb2;
+    const Eigen::Vector3d er = LogSO3(eR);
+    const Eigen::Matrix3d invJr = InverseRightJacobianSO3(er);
+
+    // Jacobians wrt Pose 1
+    _jacobianOplus[0].setZero();
+
+
+    /**
+     * !  下面这一部分需要参考 ORBVIO论文理解，在Fig 2 中的因子图中， Pi(位移和旋转)、Vi、bi（加速度和陀螺仪）、Pj、Vj， 这几个作为优化变量，作为被求导量进行计算雅克比矩阵
+     * ! 对应的求导变量为  上一帧的R和t（旋转和位移）、V（速度）、陀螺仪、加速度、                       以及当前帧的 R、t、V
+    */
+
+
+
+     //!  rotation
+     //在 qxc P20页     err(R) / r
+    _jacobianOplus[0].block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1; // OK
+    //在qxc P23页     err(V) / r
+    _jacobianOplus[0].block<3,3>(3,0) = Skew(Rbw1*(VV2->estimate() - VV1->estimate() - g*dt)); // OK
+    //在qxc P25页   err(P)  / r
+    _jacobianOplus[0].block<3,3>(6,0) = Skew(Rbw1*(VP2->estimate().twb - VP1->estimate().twb
+                                                   - VV1->estimate()*dt - 0.5*g*dt*dt)); // OK
+    //!  translation
+    //qxc P24 err(P) / p
+    _jacobianOplus[0].block<3,3>(6,3) = -Eigen::Matrix3d::Identity(); // OK
+
+    //! Jacobians wrt Velocity 1
+    _jacobianOplus[1].setZero();
+    //qxc P22   err(V) / v
+    _jacobianOplus[1].block<3,3>(3,0) = -Rbw1; // OK
+    //qxc P24   err(P) / v
+    _jacobianOplus[1].block<3,3>(6,0) = -Rbw1*dt; // OK
+
+    //! Jacobians wrt Gyro 1
+    _jacobianOplus[2].setZero();
+    //qxc P21  err(R) / g
+    _jacobianOplus[2].block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg; // OK
+    //qxc P22  err(V) / g
+    _jacobianOplus[2].block<3,3>(3,0) = -JVg; // OK
+    //qxc P23  err(P) / g
+    _jacobianOplus[2].block<3,3>(6,0) = -JPg; // OK
+
+    //! Jacobians wrt Accelerometer 1
+    _jacobianOplus[3].setZero();
+    //qxc P22  err(V) / a
+    _jacobianOplus[3].block<3,3>(3,0) = -JVa; // OK
+    //qxc P23  err(P) / a
+    _jacobianOplus[3].block<3,3>(6,0) = -JPa; // OK
+
+    //! Jacobians wrt Pose 2
+    _jacobianOplus[4].setZero();
+    //! rotation
+    //qxc P20页  err(R)/rj
+    _jacobianOplus[4].block<3,3>(0,0) = invJr; // OK
+    //!  translation
+    //qxc P24 err(P) / pj
+    _jacobianOplus[4].block<3,3>(6,3) = Rbw1*Rwb2; // OK
+
+    //! Jacobians wrt Velocity 2
+    _jacobianOplus[5].setZero();
+    //qxc P22   err(V) / vj
+    _jacobianOplus[5].block<3,3>(3,0) = Rbw1; // OK
+}
+
+EdgeInertialGS::EdgeInertialGS(IMU::Preintegrated *pInt):JRg(Converter::toMatrix3d(pInt->JRg)),
+    JVg(Converter::toMatrix3d(pInt->JVg)), JPg(Converter::toMatrix3d(pInt->JPg)), JVa(Converter::toMatrix3d(pInt->JVa)),
+    JPa(Converter::toMatrix3d(pInt->JPa)), mpInt(pInt), dt(pInt->dT)
+{
+    // This edge links 8 vertices
+    resize(8);
+    gI << 0, 0, -IMU::GRAVITY_VALUE;
+    cv::Mat cvInfo = pInt->C.rowRange(0,9).colRange(0,9).inv(cv::DECOMP_SVD);
+    Matrix9d Info;
+    for(int r=0;r<9;r++)
+        for(int c=0;c<9;c++)
+            Info(r,c)=cvInfo.at<float>(r,c);
+    Info = (Info+Info.transpose())/2;
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double,9,9> > es(Info);
+     Eigen::Matrix<double,9,1> eigs = es.eigenvalues();
+     for(int i=0;i<9;i++)
+         if(eigs[i]<1e-12)
+             eigs[i]=0;
+    Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
+    setInformation(Info);
+}
+
+
+
+void EdgeInertialGS::computeError()
+{
+    // TODO Maybe Reintegrate inertial measurments when difference between linearization point and current estimate is too big
+    const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
+    const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
+    const VertexGyroBias* VG= static_cast<const VertexGyroBias*>(_vertices[2]);
+    const VertexAccBias* VA= static_cast<const VertexAccBias*>(_vertices[3]);
+    const VertexPose* VP2 = static_cast<const VertexPose*>(_vertices[4]);
+    const VertexVelocity* VV2 = static_cast<const VertexVelocity*>(_vertices[5]);
+    const VertexGDir* VGDir = static_cast<const VertexGDir*>(_vertices[6]);
+    const VertexScale* VS = static_cast<const VertexScale*>(_vertices[7]);
+    const IMU::Bias b(VA->estimate()[0],VA->estimate()[1],VA->estimate()[2],VG->estimate()[0],VG->estimate()[1],VG->estimate()[2]);
+    g = VGDir->estimate().Rwg*gI;
+    const double s = VS->estimate();
+    const Eigen::Matrix3d dR = Converter::toMatrix3d(mpInt->GetDeltaRotation(b));
+    const Eigen::Vector3d dV = Converter::toVector3d(mpInt->GetDeltaVelocity(b));
+    const Eigen::Vector3d dP = Converter::toVector3d(mpInt->GetDeltaPosition(b));
+
+    //! 这一部分可以对比qxc的  P19    P22   P24
+    const Eigen::Vector3d er = LogSO3(dR.transpose()*VP1->estimate().Rwb.transpose()*VP2->estimate().Rwb);
+    const Eigen::Vector3d ev = VP1->estimate().Rwb.transpose()*(s*(VV2->estimate() - VV1->estimate()) - g*dt) - dV;
+    const Eigen::Vector3d ep = VP1->estimate().Rwb.transpose()*(s*(VP2->estimate().twb - VP1->estimate().twb - VV1->estimate()*dt) - g*dt*dt/2) - dP;
+
+    _error << er, ev, ep;
+}
+
+
+//! 这一部分的误差公式，如果qxc的还是不能很好的理解，那就 看函数  void EdgeInertialGS::computeError() 里面也写了误差计算函数
+void EdgeInertialGS::linearizeOplus()
+{
+    const VertexPose* VP1 = static_cast<const VertexPose*>(_vertices[0]);
+    const VertexVelocity* VV1= static_cast<const VertexVelocity*>(_vertices[1]);
+    const VertexGyroBias* VG= static_cast<const VertexGyroBias*>(_vertices[2]);
+    const VertexAccBias* VA= static_cast<const VertexAccBias*>(_vertices[3]);
+    const VertexPose* VP2 = static_cast<const VertexPose*>(_vertices[4]);
+    const VertexVelocity* VV2 = static_cast<const VertexVelocity*>(_vertices[5]);
+    const VertexGDir* VGDir = static_cast<const VertexGDir*>(_vertices[6]);
+    const VertexScale* VS = static_cast<const VertexScale*>(_vertices[7]);
+    const IMU::Bias b(VA->estimate()[0],VA->estimate()[1],VA->estimate()[2],VG->estimate()[0],VG->estimate()[1],VG->estimate()[2]);
+    const IMU::Bias db = mpInt->GetDeltaBias(b);
+
+    Eigen::Vector3d dbg;
+    dbg << db.bwx, db.bwy, db.bwz;
+
+    const Eigen::Matrix3d Rwb1 = VP1->estimate().Rwb;
+    const Eigen::Matrix3d Rbw1 = Rwb1.transpose();
+    const Eigen::Matrix3d Rwb2 = VP2->estimate().Rwb;
+    const Eigen::Matrix3d Rwg = VGDir->estimate().Rwg;
+    Eigen::MatrixXd Gm = Eigen::MatrixXd::Zero(3,2);
+    Gm(0,1) = -IMU::GRAVITY_VALUE;
+    Gm(1,0) = IMU::GRAVITY_VALUE;
+    const double s = VS->estimate();
+    const Eigen::MatrixXd dGdTheta = Rwg*Gm;
+    const Eigen::Matrix3d dR = Converter::toMatrix3d(mpInt->GetDeltaRotation(b));
+    const Eigen::Matrix3d eR = dR.transpose()*Rbw1*Rwb2;
+    const Eigen::Vector3d er = LogSO3(eR);
+    const Eigen::Matrix3d invJr = InverseRightJacobianSO3(er);
+
+    // Jacobians wrt Pose 1
+    _jacobianOplus[0].setZero();
+     // rotation
+     //在 qxc P20页     err(R) / r
+    _jacobianOplus[0].block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1;
+    //在qxc P23页     err(V) / r
+    _jacobianOplus[0].block<3,3>(3,0) = Skew(Rbw1*(s*(VV2->estimate() - VV1->estimate()) - g*dt));
+    //在qxc P25页   err(P)  / r
+    _jacobianOplus[0].block<3,3>(6,0) = Skew(Rbw1*(s*(VP2->estimate().twb - VP1->estimate().twb
+                                                   - VV1->estimate()*dt) - 0.5*g*dt*dt));
+    // translation
+    //qxc P24 err(P) / p
+    _jacobianOplus[0].block<3,3>(6,3) = -s*Eigen::Matrix3d::Identity();
+
+    // Jacobians wrt Velocity 1
+    _jacobianOplus[1].setZero();
+    //qxc P22   err(V) / v          //!  但是多出来一个尺度
+    _jacobianOplus[1].block<3,3>(3,0) = -s*Rbw1;
+    //qxc P24   err(P) / v          //!  但是多出来一个尺度
+    _jacobianOplus[1].block<3,3>(6,0) = -s*Rbw1*dt;
+
+    // Jacobians wrt Gyro bias
+    _jacobianOplus[2].setZero();
+    //qxc P21  err(R) / g
+    _jacobianOplus[2].block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg;
+    //qxc P22  err(V) / g
+    _jacobianOplus[2].block<3,3>(3,0) = -JVg;
+    //qxc P23  err(P) / g
+    _jacobianOplus[2].block<3,3>(6,0) = -JPg;
+
+    // Jacobians wrt Accelerometer bias
+    _jacobianOplus[3].setZero();
+    //qxc P22  err(V) / a
+    _jacobianOplus[3].block<3,3>(3,0) = -JVa;
+    //qxc P23  err(P) / a
+    _jacobianOplus[3].block<3,3>(6,0) = -JPa;
+
+    // Jacobians wrt Pose 2
+    _jacobianOplus[4].setZero();
+    // rotation
+    //qxc P20页  err(R)/rj
+    _jacobianOplus[4].block<3,3>(0,0) = invJr;
+    // translation
+    //qxc P24 err(P) / pj
+    _jacobianOplus[4].block<3,3>(6,3) = s*Rbw1*Rwb2;
+
+    // Jacobians wrt Velocity 2
+    _jacobianOplus[5].setZero();
+    //qxc P22   err(V) / vj
+    _jacobianOplus[5].block<3,3>(3,0) = s*Rbw1;
+
+    // Jacobians wrt Gravity direction
+    //!   err(R)、err(V)、err(P)对重力方向的求导
+    _jacobianOplus[6].setZero();
+    //qxc P22 或者 参考ORBVIO 公式6   err(V)/gw
+    _jacobianOplus[6].block<3,2>(3,0) = -Rbw1*dGdTheta*dt;
+    //qxc P24 或者 参考ORBVIO 公式6   err(P)/gw
+    _jacobianOplus[6].block<3,2>(6,0) = -0.5*Rbw1*dGdTheta*dt*dt;
+
+    // Jacobians wrt scale factor
+    //!   err(R)、err(V)、err(P)对尺度的求导
+    //速度和位置存在尺度问题，所以Vi  Vj 和 Pi  Pj都有一个系数s，至于detaV和detaP就属于常量了，求导后为0
+    // err(R) / s
+    _jacobianOplus[7].setZero();
+    //qxc P22   err(V) / s
+    _jacobianOplus[7].block<3,1>(3,0) = Rbw1*(VV2->estimate()-VV1->estimate());
+    //qxc P24  err(P) / s
+    _jacobianOplus[7].block<3,1>(6,0) = Rbw1*(VP2->estimate().twb -  VP1->estimate().twb - VV1->estimate()*dt);
+}
+
+EdgePriorPoseImu::EdgePriorPoseImu(ConstraintPoseImu *c)
+{
+    resize(4);
+    Rwb = c->Rwb;
+    twb = c->twb;
+    vwb = c->vwb;
+    bg = c->bg;
+    ba = c->ba;
+    setInformation(c->H);
+}
+
+void EdgePriorPoseImu::computeError()
+{
+    const VertexPose* VP = static_cast<const VertexPose*>(_vertices[0]);
+    const VertexVelocity* VV = static_cast<const VertexVelocity*>(_vertices[1]);
+    const VertexGyroBias* VG = static_cast<const VertexGyroBias*>(_vertices[2]);
+    const VertexAccBias* VA = static_cast<const VertexAccBias*>(_vertices[3]);
+
+    const Eigen::Vector3d er = LogSO3(Rwb.transpose()*VP->estimate().Rwb);
+    const Eigen::Vector3d et = Rwb.transpose()*(VP->estimate().twb-twb);
+    const Eigen::Vector3d ev = VV->estimate() - vwb;
+    const Eigen::Vector3d ebg = VG->estimate() - bg;
+    const Eigen::Vector3d eba = VA->estimate() - ba;
+
+    _error << er, et, ev, ebg, eba;
+}
+
+void EdgePriorPoseImu::linearizeOplus()
+{
+    const VertexPose* VP = static_cast<const VertexPose*>(_vertices[0]);
+    const Eigen::Vector3d er = LogSO3(Rwb.transpose()*VP->estimate().Rwb);
+    _jacobianOplus[0].setZero();
+    //! block<3,3>(0,0)   以坐标(0,0)为左上角的3*3矩阵，这一部分推到可以参考qxc P19页的推到方式，然后自己推导
+    // InverseRightJacobianSO3(er) 是以er为变量的右雅克比矩阵的逆
+    _jacobianOplus[0].block<3,3>(0,0) = InverseRightJacobianSO3(er);
+    //? 下面这一行推导是怎么回事？，难道不应该是0吗？没整明白～
+    _jacobianOplus[0].block<3,3>(3,3) = Rwb.transpose()*VP->estimate().Rwb;
+    _jacobianOplus[1].setZero();
+    _jacobianOplus[1].block<3,3>(6,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplus[2].setZero();
+    _jacobianOplus[2].block<3,3>(9,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplus[3].setZero();
+    _jacobianOplus[3].block<3,3>(12,0) = Eigen::Matrix3d::Identity();
+}
+
+void EdgePriorAcc::linearizeOplus()
+{
+    // Jacobian wrt bias
+    _jacobianOplusXi.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+
+}
+
+void EdgePriorGyro::linearizeOplus()
+{
+    // Jacobian wrt bias
+    _jacobianOplusXi.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+
+}
+
+// SO3 FUNCTIONS
+Eigen::Matrix3d ExpSO3(const Eigen::Vector3d &w)
+{
+    return ExpSO3(w[0],w[1],w[2]);
+}
+
+Eigen::Matrix3d ExpSO3(const double x, const double y, const double z)
+{
+    const double d2 = x*x+y*y+z*z;
+    const double d = sqrt(d2);
+    Eigen::Matrix3d W;
+    W << 0.0, -z, y,z, 0.0, -x,-y,  x, 0.0;
+    if(d<1e-5)
+    {
+        Eigen::Matrix3d res = Eigen::Matrix3d::Identity() + W +0.5*W*W;
+        return Converter::toMatrix3d(IMU::NormalizeRotation(Converter::toCvMat(res)));
+    }
+    else
+    {
+        Eigen::Matrix3d res =Eigen::Matrix3d::Identity() + W*sin(d)/d + W*W*(1.0-cos(d))/d2;
+        return Converter::toMatrix3d(IMU::NormalizeRotation(Converter::toCvMat(res)));
+    }
+}
+
+Eigen::Vector3d LogSO3(const Eigen::Matrix3d &R)
+{
+    const double tr = R(0,0)+R(1,1)+R(2,2);
+    Eigen::Vector3d w;
+    w << (R(2,1)-R(1,2))/2, (R(0,2)-R(2,0))/2, (R(1,0)-R(0,1))/2;
+    const double costheta = (tr-1.0)*0.5f;
+    if(costheta>1 || costheta<-1)
+        return w;
+    const double theta = acos(costheta);
+    const double s = sin(theta);
+    if(fabs(s)<1e-5)
+        return w;
+    else
+        return theta*w/s;
+}
+
+Eigen::Matrix3d InverseRightJacobianSO3(const Eigen::Vector3d &v)
+{
+    return InverseRightJacobianSO3(v[0],v[1],v[2]);
+}
+
+Eigen::Matrix3d InverseRightJacobianSO3(const double x, const double y, const double z)
+{
+    const double d2 = x*x+y*y+z*z;
+    const double d = sqrt(d2);
+
+    Eigen::Matrix3d W;
+    W << 0.0, -z, y,z, 0.0, -x,-y,  x, 0.0;
+    if(d<1e-5)
+        return Eigen::Matrix3d::Identity();
+    else
+        return Eigen::Matrix3d::Identity() + W/2 + W*W*(1.0/d2 - (1.0+cos(d))/(2.0*d*sin(d)));
+}
+
+Eigen::Matrix3d RightJacobianSO3(const Eigen::Vector3d &v)
+{
+    return RightJacobianSO3(v[0],v[1],v[2]);
+}
+
+Eigen::Matrix3d RightJacobianSO3(const double x, const double y, const double z)
+{
+    const double d2 = x*x+y*y+z*z;
+    const double d = sqrt(d2);
+
+    Eigen::Matrix3d W;
+    W << 0.0, -z, y,z, 0.0, -x,-y,  x, 0.0;
+    if(d<1e-5)
+    {
+        return Eigen::Matrix3d::Identity();
+    }
+    else
+    {
+        return Eigen::Matrix3d::Identity() - W*(1.0-cos(d))/d2 + W*W*(d-sin(d))/(d2*d);
+    }
+}
+
+//! 向量的叉乘运算
+Eigen::Matrix3d Skew(const Eigen::Vector3d &w)
+{
+    Eigen::Matrix3d W;
+    W << 0.0, -w[2], w[1],w[2], 0.0, -w[0],-w[1],  w[0], 0.0;
+    return W;
+}
+
+Eigen::Matrix3d NormalizeRotation(const Eigen::Matrix3d &R)
+{
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(R,Eigen::ComputeFullU | Eigen::ComputeFullV);
+    return svd.matrixU()*svd.matrixV();
+}
+}
